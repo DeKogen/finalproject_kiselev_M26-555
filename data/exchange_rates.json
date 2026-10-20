@@ -1,0 +1,142 @@
+[
+  {
+    "id": "BTC_USD_2026-10-20T09:24:32Z",
+    "from_currency": "BTC",
+    "to_currency": "USD",
+    "rate": 81410.0,
+    "timestamp": "2026-10-20T09:24:32Z",
+    "source": "CoinGecko",
+    "meta": {
+      "raw_id": "bitcoin",
+      "request_ms": 371,
+      "status_code": 200,
+      "etag": "W/\"92bce3d4e26b80b04d650a1ec7d4cf0e\""
+    }
+  },
+  {
+    "id": "ETH_USD_2026-10-20T09:24:32Z",
+    "from_currency": "ETH",
+    "to_currency": "USD",
+    "rate": 2382.63,
+    "timestamp": "2026-10-20T09:24:32Z",
+    "source": "CoinGecko",
+    "meta": {
+      "raw_id": "ethereum",
+      "request_ms": 371,
+      "status_code": 200,
+      "etag": "W/\"92bce3d4e26b80b04d650a1ec7d4cf0e\""
+    }
+  },
+  {
+    "id": "SOL_USD_2026-10-20T09:24:32Z",
+    "from_currency": "SOL",
+    "to_currency": "USD",
+    "rate": 104.14,
+    "timestamp": "2026-10-20T09:24:32Z",
+    "source": "CoinGecko",
+    "meta": {
+      "raw_id": "solana",
+      "request_ms": 371,
+      "status_code": 200,
+      "etag": "W/\"92bce3d4e26b80b04d650a1ec7d4cf0e\""
+    }
+  },
+  {
+    "id": "LTC_USD_2026-10-20T09:24:32Z",
+    "from_currency": "LTC",
+    "to_currency": "USD",
+    "rate": 59.12,
+    "timestamp": "2026-10-20T09:24:32Z",
+    "source": "CoinGecko",
+    "meta": {
+      "raw_id": "litecoin",
+      "request_ms": 371,
+      "status_code": 200,
+      "etag": "W/\"92bce3d4e26b80b04d650a1ec7d4cf0e\""
+    }
+  },
+  {
+    "id": "DOGE_USD_2026-10-20T09:24:32Z",
+    "from_currency": "DOGE",
+    "to_currency": "USD",
+    "rate": 0.079012,
+    "timestamp": "2026-10-20T09:24:32Z",
+    "source": "CoinGecko",
+    "meta": {
+      "raw_id": "dogecoin",
+      "request_ms": 371,
+      "status_code": 200,
+      "etag": "W/\"92bce3d4e26b80b04d650a1ec7d4cf0e\""
+    }
+  },
+  {
+    "id": "EUR_USD_2026-10-20T09:24:32Z",
+    "from_currency": "EUR",
+    "to_currency": "USD",
+    "rate": 1.12173393,
+    "timestamp": "2026-10-20T09:24:32Z",
+    "source": "ExchangeRate-API",
+    "meta": {
+      "raw_id": "EUR",
+      "request_ms": 221,
+      "status_code": 200,
+      "etag": null
+    }
+  },
+  {
+    "id": "GBP_USD_2026-10-20T09:24:32Z",
+    "from_currency": "GBP",
+    "to_currency": "USD",
+    "rate": 1.33139482,
+    "timestamp": "2026-10-20T09:24:32Z",
+    "source": "ExchangeRate-API",
+    "meta": {
+      "raw_id": "GBP",
+      "request_ms": 221,
+      "status_code": 200,
+      "etag": null
+    }
+  },
+  {
+    "id": "RUB_USD_2026-10-20T09:24:32Z",
+    "from_currency": "RUB",
+    "to_currency": "USD",
+    "rate": 0.01207991,
+    "timestamp": "2026-10-20T09:24:32Z",
+    "source": "ExchangeRate-API",
+    "meta": {
+      "raw_id": "RUB",
+      "request_ms": 221,
+      "status_code": 200,
+      "etag": null
+    }
+  },
+  {
+    "id": "JPY_USD_2026-10-20T09:24:32Z",
+    "from_currency": "JPY",
+    "to_currency": "USD",
+    "rate": 0.00631148,
+    "timestamp": "2026-10-20T09:24:32Z",
+    "source": "ExchangeRate-API",
+    "meta": {
+      "raw_id": "JPY",
+      "request_ms": 221,
+      "status_code": 200,
+      "etag": null
+    }
+  },
+  {
+    "id": "CNY_USD_2026-10-20T09:24:32Z",
+    "from_currency": "CNY",
+    "to_currency": "USD",
+    "rate": 0.14939508,
+    "timestamp": "2026-10-20T09:24:32Z",
+    "source": "ExchangeRate-API",
+    "meta": {
+      "raw_id": "CNY",
+      "request_ms": 221,
+      "status_code": 200,
+      "etag": null
+    }
+  }
+]
