@@ -1,0 +1,13 @@
+.venv/
+venv/
+dist/
+build/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ruff_cache/
+logs/
+.env
+.tools/
+data/session.json
+*.tmp

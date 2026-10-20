@@ -1,0 +1,46 @@
+[project]
+name = "finalproject-kiselev-m26-555"
+version = "0.1.0"
+description = "ValutaTrade Hub: консольный валютный кошелёк с курсами CoinGecko и ExchangeRate-API"
+authors = [{name = "Kiselev (М26-555)", email = "diwillkot@gmail.com"}]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["prettytable>=3.18,<4", "requests>=2.32,<3"]
+
+[project.scripts]
+valutatrade = "valutatrade_hub.cli.interface:main"
+valutatrade-parser = "valutatrade_hub.parser_service.scheduler:main"
+
+[dependency-groups]
+dev = ["ruff>=0.16.9,<0.17"]
+
+[build-system]
+requires = ["uv_build>=0.12.18,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-root = ""
+module-name = "valutatrade_hub"
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+exclude = [".venv", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.valutatrade]
+data_dir = "data"
+users_file = "users.json"
+portfolios_file = "portfolios.json"
+rates_file = "rates.json"
+history_file = "exchange_rates.json"
+session_file = "session.json"
+rates_ttl_seconds = 300
+default_base_currency = "USD"
+log_dir = "logs"
+log_level = "INFO"
+log_format = "text"
+log_max_bytes = 1048576
+log_backup_count = 3
