@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>ValutaTrade Hub — демонстрация</title>
+    <link rel="stylesheet"
+      href="https://cdn.jsdelivr.net/npm/asciinema-player@3.6.3/dist/bundle/asciinema-player.css">
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: #111827; color: #e6edf7;
+        font: 16px/1.6 system-ui, sans-serif; }
+      main { max-width: 1264px; margin: 48px auto; padding: 0 24px; }
+      h1 { margin-bottom: 8px; font-size: clamp(26px, 4vw, 40px); }
+      p { color: #bfccdd; }
+      a { color: #79dfc6; text-underline-offset: 3px; }
+      code { overflow-wrap: anywhere; color: #e6edf7; }
+      #demo { margin: 28px 0; }
+      footer { margin-top: 24px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>ValutaTrade Hub</h1>
+      <p>Kiselev · М26-555. Обновление курсов, регистрация и вход, покупка и
+        продажа валюты, портфель, курсы из кеша и обработка ошибок.</p>
+      <div id="demo" aria-label="Запись консольной демонстрации"></div>
+      <p id="status" role="status">Загрузка проигрывателя…</p>
+      <footer>
+        <a href="full-session.cast" download>Скачать запись .cast</a>
+        · <a href="preview.svg">Посмотреть фрагмент</a>
+        · <a href="https://docs.asciinema.org/manual/player/">asciinema player</a>
+        <p>Откройте страницу через локальный сервер:
+          <code>uv run python -m http.server 8000 --bind 127.0.0.1 --directory demo</code>,
+          затем перейдите на <a href="http://127.0.0.1:8000/">127.0.0.1:8000</a>.
+          Для загрузки проигрывателя с CDN нужен интернет.</p>
+      </footer>
+    </main>
+    <script
+      src="https://cdn.jsdelivr.net/npm/asciinema-player@3.6.3/dist/bundle/asciinema-player.min.js"></script>
+    <script>
+      const status = document.getElementById('status');
+      if (typeof AsciinemaPlayer === 'undefined') {
+        status.textContent = 'Не удалось загрузить проигрыватель. Проверьте интернет '
+          + 'или скачайте запись и откройте её командой asciinema play full-session.cast.';
+      } else if (location.protocol === 'file:') {
+        status.textContent = 'Для просмотра запустите локальный сервер командой ниже.';
+      } else {
+        AsciinemaPlayer.create('full-session.cast', document.getElementById('demo'), {
+          theme: 'dracula',
+          fit: 'width',
+          idleTimeLimit: 2,
+          poster: 'npt:12',
+        });
+        status.hidden = true;
+      }
+    </script>
+  </body>
+</html>
