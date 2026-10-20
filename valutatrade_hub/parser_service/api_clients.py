@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 import requests
 
 from valutatrade_hub.core.exceptions import ApiRequestError
-from valutatrade_hub.core.utils import RATE_PRECISION
+from valutatrade_hub.core.utils import BASE_CODE, is_valid_rate
 from valutatrade_hub.logging_config import PARSER_LOGGER
 from valutatrade_hub.parser_service.config import API_KEY_VARIABLE, ParserConfig
 
@@ -41,12 +41,7 @@ class BaseApiClient(ABC):
         """Вернуть словарь пар CODE_USD → курс."""
 
     def _get_json(self, url, params=None):
-        """GET-запрос с таймаутом; любая проблема превращается в ApiRequestError.
-
-        Полный текст сетевой ошибки содержит адрес запроса (а в нём ключ),
-        поэтому в сообщение попадает только класс ошибки, остальное — в журнал
-        на уровне DEBUG.
-        """
+        """Получить JSON, не раскрывая URL с ключом в сообщениях и логах."""
         started = time.perf_counter()
         try:
             response = requests.get(
@@ -55,7 +50,7 @@ class BaseApiClient(ABC):
         except requests.exceptions.Timeout:
             raise ApiRequestError("превышено время ожидания ответа") from None
         except requests.exceptions.RequestException as error:
-            logger.debug("%s: %s", self.name, error)
+            logger.debug("%s: %s", self.name, type(error).__name__)
             raise ApiRequestError(f"сетевая ошибка ({type(error).__name__})") from None
         self.last_meta = {
             "request_ms": round((time.perf_counter() - started) * 1000),
@@ -85,7 +80,7 @@ class CoinGeckoClient(BaseApiClient):
     def fetch_rates(self):
         config = self.config
         ids = [config.CRYPTO_ID_MAP[code] for code in config.CRYPTO_CURRENCIES]
-        vs_currency = config.BASE_CURRENCY.lower()
+        vs_currency = BASE_CODE.lower()
         data = self._get_json(
             config.COINGECKO_URL,
             {"ids": ",".join(ids), "vs_currencies": vs_currency},
@@ -94,8 +89,8 @@ class CoinGeckoClient(BaseApiClient):
         for code in config.CRYPTO_CURRENCIES:
             entry = data.get(config.CRYPTO_ID_MAP[code])
             price = entry.get(vs_currency) if isinstance(entry, dict) else None
-            if isinstance(price, (int, float)) and price > 0:
-                rates[f"{code}_{config.BASE_CURRENCY}"] = float(price)
+            if is_valid_rate(price):
+                rates[f"{code}_{BASE_CODE}"] = float(price)
             else:
                 logger.warning("CoinGecko: нет цены для %s", code)
         if not rates:
@@ -121,18 +116,31 @@ class ExchangeRateApiClient(BaseApiClient):
     def fetch_rates(self):
         data = self._get_json(self._url())
         if data.get("result") != "success":
-            error_type = str(data.get("error-type", "неизвестная ошибка"))
-            raise ApiRequestError(ERROR_TYPES.get(error_type, error_type))
+            error_type = data.get("error-type")
+            reason = (
+                ERROR_TYPES.get(error_type, "неизвестная ошибка ExchangeRate-API")
+                if isinstance(error_type, str)
+                else "неожиданный формат ошибки ExchangeRate-API"
+            )
+            raise ApiRequestError(reason)
         table = data.get("conversion_rates") or data.get("rates") or {}
+        if not isinstance(table, dict):
+            raise ApiRequestError("неожиданный формат таблицы курсов")
         base = self.config.BASE_CURRENCY
+        usd_per_base = 1.0 if base == BASE_CODE else table.get(BASE_CODE)
+        if not is_valid_rate(usd_per_base):
+            raise ApiRequestError(f"ответ не содержит корректного курса {base}→USD")
         rates = {}
         for code in self.config.FIAT_CURRENCIES:
-            value = table.get(code)
-            if isinstance(value, (int, float)) and value > 0:
-                # API отдаёт USD→CODE, в кеше храним CODE→USD
-                rates[f"{code}_{base}"] = round(1 / float(value), RATE_PRECISION)
-            else:
+            value = 1.0 if code == base else table.get(code)
+            if not is_valid_rate(value):
                 logger.warning("%s: нет курса для %s", self.name, code)
+                continue
+            rate = float(usd_per_base) / float(value)
+            if is_valid_rate(rate):
+                rates[f"{code}_{BASE_CODE}"] = rate
+            else:
+                logger.warning("%s: некорректный курс %s→USD", self.name, code)
         if not rates:
             raise ApiRequestError("ответ не содержит курсов")
         return rates

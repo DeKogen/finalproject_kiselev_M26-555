@@ -4,14 +4,14 @@ import logging
 from dataclasses import dataclass, field
 
 from valutatrade_hub.core.exceptions import ApiRequestError
-from valutatrade_hub.core.utils import to_iso, utc_now
+from valutatrade_hub.core.utils import is_valid_rate, to_iso, utc_now
 from valutatrade_hub.logging_config import PARSER_LOGGER
 from valutatrade_hub.parser_service.api_clients import (
     CoinGeckoClient,
     ExchangeRateApiClient,
 )
 from valutatrade_hub.parser_service.config import ParserConfig
-from valutatrade_hub.parser_service.storage import RatesStorage
+from valutatrade_hub.parser_service.storage import PAIR_PATTERN, RatesStorage
 
 logger = logging.getLogger(PARSER_LOGGER)
 SOURCES = {"coingecko": CoinGeckoClient, "exchangerate": ExchangeRateApiClient}
@@ -37,30 +37,48 @@ class RatesUpdater:
         """Собрать курсы; падение одного источника не мешает остальным."""
         logger.info("Starting rates update...")
         report = UpdateReport()
-        now = to_iso(utc_now())
         pairs = {}
         history = []
         for client in self.clients:
             try:
                 rates = client.fetch_rates()
+                received_at = to_iso(utc_now())
+                if not isinstance(rates, dict) or not rates:
+                    raise ApiRequestError("ответ не содержит курсов")
+                if any(
+                    not isinstance(pair, str)
+                    or not PAIR_PATTERN.fullmatch(pair)
+                    or not is_valid_rate(rate)
+                    for pair, rate in rates.items()
+                ):
+                    raise ApiRequestError("ответ содержит некорректные курсы")
             except Exception as error:
                 reason = str(error)
                 if isinstance(error, ApiRequestError):
                     reason = error.reason
+                key = getattr(
+                    getattr(client, "config", None), "EXCHANGERATE_API_KEY", None
+                )
+                if key:
+                    reason = reason.replace(key, "***")
                 logger.error("Failed to fetch from %s: %s", client.name, reason)
                 report.errors[client.name] = reason
                 continue
             logger.info("Fetching from %s... OK (%d rates)", client.name, len(rates))
             for pair, rate in rates.items():
                 from_code, _, to_code = pair.partition("_")
-                pairs[pair] = {"rate": rate, "updated_at": now, "source": client.name}
+                pairs[pair] = {
+                    "rate": rate,
+                    "updated_at": received_at,
+                    "source": client.name,
+                }
                 history.append(
                     {
-                        "id": f"{pair}_{now}",
+                        "id": f"{pair}_{received_at}",
                         "from_currency": from_code,
                         "to_currency": to_code,
                         "rate": rate,
-                        "timestamp": now,
+                        "timestamp": received_at,
                         "source": client.name,
                         "meta": {
                             "raw_id": client.config.CRYPTO_ID_MAP.get(
@@ -73,15 +91,15 @@ class RatesUpdater:
         if pairs:
             path = str(self.storage.rates_path).replace("\\", "/")
             logger.info("Writing %d rates to %s...", len(pairs), path)
+            last_refresh = to_iso(utc_now())
             try:
-                self.storage.save_snapshot(pairs, now)
-                self.storage.append_history(history)
+                snapshot, total = self.storage.save_update(pairs, last_refresh, history)
             except OSError as error:
                 logger.error("Failed to write rates: %s", error)
                 report.errors["storage"] = str(error)
             else:
-                report.total = len(pairs)
-                report.last_refresh = now
+                report.total = total
+                report.last_refresh = snapshot["last_refresh"]
         logger.info(
             "Update finished: %d rates saved, failed sources: %s",
             report.total,

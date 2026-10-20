@@ -27,9 +27,7 @@ class SettingsLoader:
 
     _instance = None
 
-    # Синглтон через __new__, а не через метакласс: короче, и читается
-    # без знания метаклассов. Повторный вызов SettingsLoader() вернёт тот же
-    # объект, конфигурация читается один раз.
+    # __new__ позволяет обойтись без метакласса и возвращать один экземпляр.
     def __new__(cls, config_path=None):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
@@ -51,6 +49,7 @@ class SettingsLoader:
         self._values = values
 
     def get(self, key, default=None):
+        """Значение настройки или default."""
         return self._values.get(key, default)
 
     @property

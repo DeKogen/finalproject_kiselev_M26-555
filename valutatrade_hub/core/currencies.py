@@ -9,12 +9,12 @@ CODE_PATTERN = re.compile(r"^[A-Z0-9]{2,5}$")
 
 
 class Currency(ABC):
-    """Валюта с кодом и человекочитаемым названием."""
+    """Валюта с кодом и названием."""
 
     def __init__(self, name, code):
         if not isinstance(name, str) or not name.strip():
             raise ValueError("Название валюты не может быть пустым")
-        if not isinstance(code, str) or not CODE_PATTERN.match(code):
+        if not isinstance(code, str) or not CODE_PATTERN.fullmatch(code):
             raise ValueError(
                 f"Код '{code}' должен состоять из 2–5 заглавных букв или цифр"
             )
@@ -37,6 +37,7 @@ class FiatCurrency(Currency):
         self.issuing_country = issuing_country
 
     def get_display_info(self):
+        """Код, название и страна выпуска."""
         return f"[FIAT] {self.code} — {self.name} (Issuing: {self.issuing_country})"
 
 
@@ -49,6 +50,7 @@ class CryptoCurrency(Currency):
         self.market_cap = float(market_cap)
 
     def get_display_info(self):
+        """Код, название, алгоритм и капитализация."""
         market_cap = f"{self.market_cap:.2e}".replace("e+", "e")
         return (
             f"[CRYPTO] {self.code} — {self.name} "
@@ -81,8 +83,10 @@ def get_currency(code):
 
 
 def supported_codes():
+    """Поддерживаемые коды в алфавитном порядке."""
     return sorted(REGISTRY)
 
 
 def is_crypto(code):
+    """Относится ли код к криптовалютам."""
     return isinstance(REGISTRY.get(code), CryptoCurrency)

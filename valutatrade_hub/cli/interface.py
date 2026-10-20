@@ -46,15 +46,17 @@ class CommandError(Exception):
 
 
 class CommandParser(argparse.ArgumentParser):
-    """Парсер, который сообщает об ошибке по-русски вместо завершения процесса."""
+    """Ошибки аргументов на русском без завершения приложения."""
 
     def error(self, message):
+        """Передать ошибку аргументов в обработчик CLI."""
         for english, russian in ARGPARSE_MESSAGES.items():
             message = message.replace(english, russian)
         raise CommandError(message)
 
 
 def cmd_register(args):
+    """Зарегистрировать пользователя."""
     user = usecases.register(args.username, args.password)
     name = shlex.quote(user.username)
     print(
@@ -64,16 +66,19 @@ def cmd_register(args):
 
 
 def cmd_login(args):
+    """Открыть пользовательскую сессию."""
     user = usecases.login(args.username, args.password)
     print(f"Вы вошли как '{user.username}'")
 
 
 def cmd_logout(args):
+    """Завершить сессию."""
     usecases.logout()
     print("Вы вышли из системы")
 
 
 def cmd_whoami(args):
+    """Показать пользователя текущей сессии."""
     info = usecases.require_login().get_user_info()
     print(
         f"Вы вошли как '{info['username']}' (id={info['user_id']}, "
@@ -82,16 +87,17 @@ def cmd_whoami(args):
 
 
 def cmd_show_portfolio(args):
+    """Показать кошельки и общую стоимость."""
     user = usecases.require_login()
     try:
         view = usecases.show_portfolio(user.user_id, args.base)
     except CurrencyNotFoundError as error:
         print(f"Неизвестная базовая валюта '{error.code}'")
-        return
+        return 1
     if not view.rows:
         print(
             f"У пользователя '{view.username}' пока нет кошельков. "
-            "Купите валюту командой buy."
+            "Пополните USD командой deposit --amount 10000."
         )
         return
     print(f"Портфель пользователя '{view.username}' (база: {view.base}):")
@@ -119,6 +125,11 @@ def _print_trade(result, title, value_title):
         f"- {code}: было {utils.format_amount(result.old_balance, code)} "
         f"→ стало {utils.format_amount(result.new_balance, code)}"
     )
+    if result.old_usd_balance is not None and code != "USD":
+        print(
+            f"- USD: было {utils.format_amount(result.old_usd_balance, 'USD')} "
+            f"→ стало {utils.format_amount(result.new_usd_balance, 'USD')}"
+        )
     value = utils.format_money(result.value, result.base)
     print(f"{value_title}: {value} {result.base}")
     if result.is_stale:
@@ -132,19 +143,34 @@ def _trade(args, operation, title, value_title):
         result = operation(user.user_id, args.currency, amount)
     except (ApiRequestError, RateNotFoundError) as error:
         code = utils.normalize_code(args.currency)
-        print(f"Не удалось получить курс для {code}→{usecases.base_currency()}")
+        print(f"Не удалось получить курс для {code}→USD")
         print(error)
         print(RATE_HINT)
-        return
+        return 1
     _print_trade(result, title, value_title)
+    return 0
 
 
 def cmd_buy(args):
-    _trade(args, usecases.buy, "Покупка выполнена", "Оценочная стоимость покупки")
+    """Купить валюту за USD."""
+    return _trade(args, usecases.buy, "Покупка выполнена", "Стоимость покупки")
 
 
 def cmd_sell(args):
-    _trade(args, usecases.sell, "Продажа выполнена", "Оценочная выручка")
+    """Продать валюту за USD."""
+    return _trade(args, usecases.sell, "Продажа выполнена", "Выручка")
+
+
+def cmd_deposit(args):
+    """Пополнить виртуальный счёт USD."""
+    user = usecases.require_login()
+    result = usecases.deposit(user.user_id, utils.parse_amount(args.amount))
+    print(f"Счёт пополнен: {utils.format_amount(result.amount, 'USD')} USD")
+    print("Изменения в портфеле:")
+    print(
+        f"- USD: было {utils.format_amount(result.old_balance, 'USD')} "
+        f"→ стало {utils.format_amount(result.new_balance, 'USD')}"
+    )
 
 
 def _rate_unavailable(args):
@@ -153,15 +179,16 @@ def _rate_unavailable(args):
 
 
 def cmd_get_rate(args):
+    """Показать прямой и обратный курс."""
     try:
         info = usecases.get_rate(args.from_code, args.to_code)
     except ApiRequestError as error:
         print(error)
         _rate_unavailable(args)
-        return
+        return 1
     except RateNotFoundError:
         _rate_unavailable(args)
-        return
+        return 1
     line = f"Курс {info.from_code}→{info.to_code}: {utils.format_rate(info.rate)}"
     if info.updated_at:
         line += f" (обновлено: {utils.format_moment(info.updated_at)})"
@@ -173,6 +200,7 @@ def cmd_get_rate(args):
 
 
 def cmd_update_rates(args):
+    """Обновить курсы и показать результат по источникам."""
     with parser_console():
         report = usecases.refresh_rates(args.source)
     refreshed = utils.format_moment(report.last_refresh, "T")
@@ -180,7 +208,7 @@ def cmd_update_rates(args):
         print("Update completed with errors. Check logs/parser.log for details.")
         if report.total:
             print(f"Rates updated: {report.total}. Last refresh: {refreshed}")
-        return
+        return 1
     print(
         f"Update successful. Total rates updated: {report.total}. "
         f"Last refresh: {refreshed}"
@@ -188,13 +216,14 @@ def cmd_update_rates(args):
 
 
 def cmd_show_rates(args):
+    """Показать таблицу курсов из кеша."""
     rows, last_refresh = usecases.list_rates(args.currency, args.top, args.base)
     if not rows:
         print(
             "Локальный кеш курсов пуст. Выполните 'update-rates', "
             "чтобы загрузить данные."
         )
-        return
+        return 1
     print(f"Rates from cache (updated at {utils.format_moment(last_refresh, 'T')}):")
     table = PrettyTable(["Pair", "Rate", "Updated at", "Source"])
     table.align["Pair"] = "l"
@@ -209,13 +238,17 @@ def cmd_show_rates(args):
             ]
         )
     print(table)
+    if any(row.is_stale for row in rows):
+        print(STALE_NOTE)
 
 
 def cmd_help(args):
+    """Показать справку по команде."""
     if args.topic in COMMANDS:
         COMMANDS[args.topic].print_help()
     elif args.topic:
         print(f"Неизвестная команда '{args.topic}'. Доступные: {', '.join(COMMANDS)}")
+        return 1
     else:
         PARSER.print_help()
 
@@ -254,6 +287,10 @@ def build_parser():
     sub.add_argument("--base", help="базовая валюта (по умолчанию USD)")
     sub.set_defaults(handler=cmd_show_portfolio)
 
+    sub = command("deposit", "Пополнить виртуальный счёт USD.")
+    sub.add_argument("--amount", required=True, help="сумма в USD")
+    sub.set_defaults(handler=cmd_deposit)
+
     sub = command("buy", "Купить валюту; кошелёк создаётся при первой покупке.")
     sub.add_argument("--currency", required=True, help="код валюты, например BTC")
     sub.add_argument("--amount", required=True, help="количество в единицах валюты")
@@ -291,20 +328,20 @@ PARSER, COMMANDS = build_parser()
 
 
 def run_command(argv):
-    """Выполнить одну команду; ошибки превращаются в сообщения."""
+    """Выполнить команду; вернуть 0 при успехе, 1 при ошибке."""
     try:
         args = PARSER.parse_args(argv)
     except CommandError as error:
         print(f"Ошибка: {error}")
         print("Введите help для списка команд.")
-        return
-    except SystemExit:
-        return
+        return 1
+    except SystemExit as error:
+        return error.code
     if getattr(args, "handler", None) is None:
         PARSER.print_help()
-        return
+        return 0
     try:
-        args.handler(args)
+        return args.handler(args) or 0
     except InsufficientFundsError as error:
         print(error)
     except CurrencyNotFoundError as error:
@@ -320,9 +357,13 @@ def run_command(argv):
         print(error)
     except (ValueError, TypeError) as error:
         print(error)
+    except OSError as error:
+        logger.error("Storage error in command %s: %s", args.command, error)
+        print(f"Не удалось сохранить или прочитать данные: {error}")
     except Exception as error:
         logger.exception("Unexpected error in command %s", args.command)
         print(f"Непредвиденная ошибка: {error}")
+    return 1
 
 
 def repl():
@@ -364,12 +405,14 @@ def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
     try:
         if argv:
-            run_command(argv)
+            return run_command(argv)
         else:
             repl()
     except KeyboardInterrupt:
         print(f"\n{INTERRUPTED}")
+        return 130
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

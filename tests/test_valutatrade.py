@@ -167,7 +167,9 @@ def test_wallet_rules():
     assert wallet.balance == 0.04
     assert_raises(ValueError, wallet.deposit, 0)
     assert_raises(ValueError, wallet.deposit, -1)
-    assert_raises(ValueError, wallet.deposit, 1e-9)
+    small = Wallet("BTC")
+    small.deposit(1e-9)
+    assert small.balance == 1e-9
     assert_raises(ValueError, wallet.withdraw, "1")
     error = assert_raises(InsufficientFundsError, wallet.withdraw, 1)
     expected = "Недостаточно средств: доступно 0.0400 BTC, требуется 1.0000 BTC"
@@ -239,9 +241,13 @@ def test_utils_formats():
     assert utils.format_money(0.5, "BTC") == "0.5000"
     assert utils.format_amount(0.05, "BTC") == "0.0500"
     assert utils.format_amount(200, "EUR") == "200.00"
+    assert utils.format_amount(0.00000001, "BTC") == "0.00000001"
+    assert utils.format_amount(0.00000001, "USD") == "0.00000001"
+    assert utils.format_money(0.0006, "USD") == "0.0006"
+    assert utils.format_money(1e-12, "USD") == "1e-12"
     assert_raises(ValueError, utils.parse_amount, "abc")
     assert_raises(ValueError, utils.parse_amount, "-1")
-    assert_raises(ValueError, utils.parse_amount, "1e-9")
+    assert utils.parse_amount("1e-9") == 1e-9
     assert_raises(ValueError, utils.validate_amount, float("nan"))
     assert utils.parse_amount("0.5") == 0.5
     rates = {"BTC_USD": 50000.0, "EUR_USD": 1.25}
@@ -330,6 +336,9 @@ def test_decorators():
 
         operation(1, "BTC", 0.5)
         assert_raises(ValueError, operation, 1, "BTC", -1.0)
+        operation(1, "BTC", 1e-8)
+        operation(1, "BTC", 0.12345678)
+        operation(1, "BTC", 1e-12)
     finally:
         logger.removeHandler(handler)
     messages = [record.getMessage() for record in records]
@@ -340,6 +349,13 @@ def test_decorators():
     assert messages[1].startswith(
         "BUY user=1 currency='BTC' amount=-1.0000 result=ERROR error_type=ValueError"
     )
+    assert "amount=0.00000001 " in messages[2]
+    assert "balance=0.0000->0.00000001 " in messages[2]
+    assert "amount=0.12345678 " in messages[3]
+    assert "balance=0.0000->0.12345678 " in messages[3]
+    assert "amount=0.000000000001 " in messages[4]
+    assert "balance=0.0000->0.000000000001 " in messages[4]
+    assert all(record.levelno == logging.INFO for record in records)
     payload = json.loads(JsonFormatter().format(records[0]))
     assert payload["action"] == "BUY" and payload["result"] == "OK"
     assert payload["level"] == "INFO" and "timestamp" in payload
@@ -379,23 +395,30 @@ def test_buy_sell_and_portfolio():
         write_rates({"BTC_USD": 60000.0, "EUR_USD": 1.1})
         patcher, build = offline_updater()
         try:
+            assert_raises(
+                InsufficientFundsError, usecases.buy, user.user_id, "BTC", 0.05
+            )
+            usecases.deposit(user.user_id, 3370)
             result = usecases.buy(user.user_id, "btc", 0.05)
             assert (result.old_balance, result.new_balance) == (0.0, 0.05)
             assert result.rate == 60000.0 and result.value == 3000.0
+            assert (result.old_usd_balance, result.new_usd_balance) == (3370, 370)
             assert not result.is_stale
             usecases.buy(user.user_id, "EUR", 200)
-            usecases.buy(user.user_id, "USD", 150)
+            usd = usecases.buy(user.user_id, "USD", 150)
+            assert (usd.old_balance, usd.new_balance) == (150, 150)
             assert_raises(ValueError, usecases.buy, user.user_id, "BTC", 0)
             assert_raises(CurrencyNotFoundError, usecases.buy, user.user_id, "ABC", 1)
             assert_raises(ApiRequestError, usecases.buy, user.user_id, "SOL", 1)
             assert build.call_count == 1
             sold = usecases.sell(user.user_id, "BTC", 0.01)
             assert sold.new_balance == 0.04 and sold.value == 600.0
+            assert (sold.old_usd_balance, sold.new_usd_balance) == (150, 750)
             assert_raises(InsufficientFundsError, usecases.sell, user.user_id, "BTC", 1)
             assert_raises(WalletNotFoundError, usecases.sell, user.user_id, "ETH", 1)
             view = usecases.show_portfolio(user.user_id)
-            assert [row.code for row in view.rows] == ["BTC", "EUR", "USD"]
-            assert abs(view.total - (0.04 * 60000 + 220 + 150)) < 1e-6
+            assert {row.code for row in view.rows} == {"BTC", "EUR", "USD"}
+            assert abs(view.total - 3370) < 1e-6
             assert not view.is_stale and view.updated_at
             eur = usecases.show_portfolio(user.user_id, "eur")
             assert eur.base == "EUR" and abs(eur.total - view.total / 1.1) < 1e-6
@@ -424,12 +447,11 @@ def test_get_rate_ttl_and_refresh():
         write_rates({"BTC_USD": 50000.0, "EUR_USD": 1.25}, age_seconds=3600)
         patcher, build = offline_updater()
         try:
-            stale = usecases.get_rate("BTC", "USD")
-            assert stale.is_stale and stale.rate == 50000.0
+            assert_raises(ApiRequestError, usecases.get_rate, "BTC", "USD")
             assert build.call_count == 1 and notices == [1]
             error = assert_raises(ApiRequestError, usecases.get_rate, "SOL", "USD")
             assert "CoinGecko: Network error" in str(error)
-            usecases.get_rate("BTC", "USD")
+            assert_raises(ApiRequestError, usecases.get_rate, "BTC", "USD")
             assert build.call_count == 1
         finally:
             patcher.stop()
@@ -459,7 +481,7 @@ def test_get_rate_ttl_and_refresh():
         try:
             assert not usecases.get_rate("EUR", "USD").is_stale
             assert build.call_count == 0
-            assert usecases.get_rate("BTC", "USD").is_stale
+            assert_raises(ApiRequestError, usecases.get_rate, "BTC", "USD")
             assert build.call_count == 1
         finally:
             patcher.stop()
@@ -569,7 +591,10 @@ def test_updater_and_storage():
         assert snapshot["last_refresh"] == report.last_refresh
         history = storage.load_history()
         assert len(history) == 2
-        assert history[0]["id"] == f"BTC_USD_{report.last_refresh}"
+        stamp = history[0]["timestamp"]
+        assert history[0]["id"] == f"BTC_USD_{stamp}"
+        assert stamp == snapshot["pairs"]["BTC_USD"]["updated_at"]
+        assert utils.parse_iso(report.last_refresh) >= utils.parse_iso(stamp)
         assert history[0]["meta"]["status_code"] == 200
         assert storage.append_history(history) == 0
         old = {"rate": 1.0, "updated_at": "2020-01-01T00:00:00Z", "source": "old"}
@@ -615,26 +640,35 @@ def test_cli_session():
             assert out.strip() == "Вы вошли как 'alice'"
             assert "пока нет кошельков" in run_cli("show-portfolio")
             out = run_cli("buy", "--currency", "BTC", "--amount", "0.05")
+            assert "доступно 0.00 USD, требуется 2965.00 USD" in out
+            out = run_cli("deposit", "--amount", "3329")
+            assert "Счёт пополнен: 3329.00 USD" in out
+            out = run_cli("buy", "--currency", "BTC", "--amount", "0.05")
             assert out.splitlines() == [
                 "Покупка выполнена: 0.0500 BTC по курсу 59300.00 USD/BTC",
                 "Изменения в портфеле:",
                 "- BTC: было 0.0000 → стало 0.0500",
-                "Оценочная стоимость покупки: 2,965.00 USD",
+                "- USD: было 3329.00 → стало 364.00",
+                "Стоимость покупки: 2,965.00 USD",
             ]
             run_cli("buy", "--currency", "EUR", "--amount", "200")
-            run_cli("buy", "--currency", "USD", "--amount", "150")
             assert run_cli("show-portfolio").splitlines() == [
                 "Портфель пользователя 'alice' (база: USD):",
+                "- USD: 150.00  → 150.00 USD",
                 "- BTC: 0.0500  → 2965.00 USD",
                 "- EUR: 200.00  → 214.00 USD",
-                "- USD: 150.00  → 150.00 USD",
                 "---------------------------------",
                 "ИТОГО: 3,329.00 USD",
             ]
             out = run_cli("sell", "--currency", "BTC", "--amount", "0.01")
             assert "Продажа выполнена: 0.0100 BTC по курсу 59300.00 USD/BTC" in out
             assert "- BTC: было 0.0500 → стало 0.0400" in out
-            assert "Оценочная выручка: 593.00 USD" in out
+            assert "Выручка: 593.00 USD" in out
+            assert "- USD: было 150.00 → стало 743.00" in out
+            for command in ("buy", "sell"):
+                out = run_cli(command, "--currency", "USD", "--amount", "1")
+                assert out.count("- USD:") == 1
+                assert "- USD: было 743.00 → стало 743.00" in out
             out = run_cli("sell", "--currency", "BTC", "--amount", "0.05")
             assert "доступно 0.0400 BTC, требуется 0.0500 BTC" in out
             out = run_cli("sell", "--currency", "ETH", "--amount", "1")
@@ -677,7 +711,7 @@ def test_cli_session():
             patcher.stop()
 
 
-def test_recovery_and_limits():
+def test_recovery_and_identity_rates():
     with temporary_workdir():
         write_rates({"BTC_USD": 60000.0})
         assert_raises(ValueError, usecases.list_rates, base="JPY")
@@ -696,7 +730,7 @@ def test_recovery_and_limits():
                 total=1, last_refresh="now"
             )
             usecases.refresh_rates("coingecko")
-            assert_raises(RateNotFoundError, usecases.get_rate, "EUR", "USD")
+            assert_raises(ApiRequestError, usecases.get_rate, "EUR", "USD")
             assert build.call_count == 2
         Path(".env").write_text("=x\nVALID_TEST_KEY=1\n", encoding="utf-8")
         os.environ.pop("VALID_TEST_KEY", None)
@@ -708,7 +742,7 @@ def test_recovery_and_limits():
         assert usecases.get_rate("USD", "USD").updated_at is None
         out = run_cli("get-rate", "--from", "USD", "--to", "USD")
         assert out.splitlines()[0] == "Курс USD→USD: 1.0000"
-    assert_raises(ValueError, utils.validate_amount, 1e13)
+    assert utils.validate_amount(1e13) == 1e13
 
 
 def main():

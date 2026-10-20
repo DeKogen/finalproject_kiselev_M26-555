@@ -1,4 +1,4 @@
-.PHONY: install run lint format test build package-install update-rates
+.PHONY: install run lint format test build package-install update-rates demo
 
 install:
 	uv sync
@@ -15,6 +15,7 @@ format:
 
 test:
 	uv run python tests/test_valutatrade.py
+	uv run python -m unittest discover -s tests
 
 build:
 	uv build
@@ -24,3 +25,6 @@ package-install:
 
 update-rates:
 	uv run main.py update-rates
+
+demo:
+	uv run python -m http.server 8000 --bind 127.0.0.1 --directory demo

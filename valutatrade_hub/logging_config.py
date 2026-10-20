@@ -20,6 +20,7 @@ class JsonFormatter(logging.Formatter):
     """Одна JSON-строка на запись журнала."""
 
     def format(self, record):
+        """Преобразовать запись в JSON-строку."""
         payload = {
             "timestamp": self.formatTime(record, DATE_FORMAT),
             "level": record.levelname,

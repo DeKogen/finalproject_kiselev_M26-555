@@ -1,4 +1,9 @@
-"""Доменные исключения ValutaTrade Hub."""
+"""Ошибки ValutaTrade Hub."""
+
+
+def _amount_text(value, digits):
+    text = f"{value:.{digits}f}"
+    return f"{value:.8g}" if value and float(text) == 0 else text
 
 
 class ValutaTradeError(Exception):
@@ -12,9 +17,14 @@ class InsufficientFundsError(ValutaTradeError):
         self.available = available
         self.required = required
         self.code = code
+        available_text = _amount_text(available, digits)
+        required_text = _amount_text(required, digits)
+        if available != required and available_text == required_text:
+            available_text = str(available)
+            required_text = str(required)
         super().__init__(
-            f"Недостаточно средств: доступно {available:.{digits}f} {code}, "
-            f"требуется {required:.{digits}f} {code}"
+            f"Недостаточно средств: доступно {available_text} {code}, "
+            f"требуется {required_text} {code}"
         )
 
 

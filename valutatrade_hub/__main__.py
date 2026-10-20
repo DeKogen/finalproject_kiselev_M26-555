@@ -2,4 +2,4 @@
 
 from valutatrade_hub.cli.interface import main
 
-main()
+raise SystemExit(main())

@@ -11,3 +11,5 @@ logs/
 .tools/
 data/session.json
 *.tmp
+*.lock
+!uv.lock

@@ -1,14 +1,14 @@
-"""Модели предметной области: пользователь, кошелёк, портфель."""
+"""Пользователь, кошелёк и портфель."""
 
 import hashlib
 import math
 import secrets
 from datetime import datetime
+from decimal import Decimal, localcontext
 
 from valutatrade_hub.core.exceptions import InsufficientFundsError, WalletNotFoundError
 from valutatrade_hub.core.utils import (
     DEFAULT_RATES,
-    RATE_PRECISION,
     amount_digits,
     convert,
     format_amount,
@@ -19,7 +19,7 @@ from valutatrade_hub.core.utils import (
 )
 
 SALT_BYTES = 8
-EPSILON = 1e-9
+DECIMAL_PRECISION = 40
 
 
 class User:
@@ -132,26 +132,45 @@ class Wallet:
     def balance(self, value):
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise TypeError("Баланс должен быть числом")
+        try:
+            value = float(value)
+        except OverflowError:
+            raise ValueError("Баланс не может быть бесконечным") from None
         if not math.isfinite(value) or value < 0:
             raise ValueError("Баланс не может быть отрицательным или бесконечным")
-        self._balance = round(float(value), RATE_PRECISION)
+        self._balance = value
 
     def deposit(self, amount):
         """Пополнить кошелёк на положительную сумму."""
-        amount = validate_amount(amount)
-        self.balance = self._balance + amount
+        self._change_balance(self.validate_amount(amount))
+
+    @staticmethod
+    def validate_amount(amount):
+        """Проверить положительную конечную сумму."""
+        return validate_amount(amount)
+
+    def _change_balance(self, amount):
+        with localcontext() as context:
+            context.prec = DECIMAL_PRECISION
+            updated = Decimal(str(self._balance)) + Decimal(str(amount))
+        value = float(updated)
+        if not math.isfinite(value):
+            raise ValueError("Баланс не может быть бесконечным")
+        if value == self._balance:
+            raise ValueError("Сумма меньше точности текущего баланса")
+        self.balance = value
 
     def withdraw(self, amount):
         """Списать сумму, если хватает средств."""
         amount = validate_amount(amount)
-        if amount > self._balance + EPSILON:
+        if amount > self._balance:
             raise InsufficientFundsError(
                 self._balance,
                 amount,
                 self.currency_code,
                 amount_digits(self.currency_code),
             )
-        self.balance = max(self._balance - amount, 0.0)
+        self._change_balance(-amount)
 
     def get_balance_info(self):
         """Строка вида «BTC: 0.0500»."""
@@ -160,10 +179,12 @@ class Wallet:
         )
 
     def to_dict(self):
+        """Запись кошелька для portfolios.json."""
         return {"currency_code": self.currency_code, "balance": self._balance}
 
     @classmethod
     def from_dict(cls, data, currency_code=None):
+        """Кошелёк из JSON; код можно передать отдельно."""
         code = data.get("currency_code", currency_code)
         return cls(code, data.get("balance", 0.0))
 

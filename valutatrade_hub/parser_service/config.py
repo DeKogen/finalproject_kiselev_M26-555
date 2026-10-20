@@ -5,6 +5,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from valutatrade_hub.core.currencies import FiatCurrency, get_currency
 from valutatrade_hub.infra.settings import SettingsLoader
 from valutatrade_hub.logging_config import PARSER_LOGGER
 
@@ -43,13 +44,13 @@ def _data_file(name):
 
 @dataclass(frozen=True)
 class ParserConfig:
-    """Настройки парсера; ключ не хранится в коде, а берётся из окружения."""
+    """Настройки парсера; API-ключ берётся из окружения или .env."""
 
     EXCHANGERATE_API_KEY: str | None = field(default_factory=_api_key, repr=False)
 
     COINGECKO_URL: str = "https://api.coingecko.com/api/v3/simple/price"
     EXCHANGERATE_API_URL: str = "https://v6.exchangerate-api.com/v6"
-    # Открытый эндпоинт того же сервиса на случай, когда ключ не задан
+    # Используется, если API-ключ не задан.
     EXCHANGERATE_OPEN_URL: str = "https://open.er-api.com/v6/latest"
 
     BASE_CURRENCY: str = "USD"
@@ -70,3 +71,9 @@ class ParserConfig:
 
     REQUEST_TIMEOUT: int = 10
     UPDATE_INTERVAL_SECONDS: int = 300
+
+    def __post_init__(self):
+        currency = get_currency(self.BASE_CURRENCY)
+        if not isinstance(currency, FiatCurrency):
+            raise ValueError("Базовая валюта Parser Service должна быть фиатной")
+        object.__setattr__(self, "BASE_CURRENCY", currency.code)

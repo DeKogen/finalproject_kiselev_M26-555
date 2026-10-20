@@ -2,15 +2,17 @@
 
 import time
 from dataclasses import dataclass
+from decimal import Decimal, localcontext
 
 from valutatrade_hub.core import utils
 from valutatrade_hub.core.currencies import is_crypto
 from valutatrade_hub.core.exceptions import (
     ApiRequestError,
     AuthError,
+    InsufficientFundsError,
     RateNotFoundError,
 )
-from valutatrade_hub.core.models import Portfolio, User
+from valutatrade_hub.core.models import DECIMAL_PRECISION, Portfolio, User, Wallet
 from valutatrade_hub.decorators import cached, log_action
 from valutatrade_hub.infra.database import DatabaseManager
 from valutatrade_hub.infra.settings import SettingsLoader
@@ -21,7 +23,7 @@ RATES_READ_CACHE_SECONDS = 5
 REFRESH_RETRY_SECONDS = 60
 RATE_SOURCES = tuple(SOURCES)
 
-# Вызывается перед автообновлением курсов; CLI подставляет сюда вывод подсказки
+# CLI задаёт функцию для сообщения перед автообновлением курсов.
 on_refresh = None
 _last_attempt = {"at": None, "errors": {}}
 
@@ -53,15 +55,22 @@ class TradeResult:
     old_balance: float
     new_balance: float
     is_stale: bool
+    old_usd_balance: float | None = None
+    new_usd_balance: float | None = None
+    settlement_value: float | None = None
 
     @property
     def value(self):
-        """Оценочная стоимость сделки в базовой валюте."""
+        """Сумма расчёта по сделке в базовой валюте."""
+        if self.settlement_value is not None:
+            return self.settlement_value
         return self.amount * self.rate
 
 
 @dataclass
 class PortfolioRow:
+    """Баланс кошелька и его стоимость в базовой валюте."""
+
     code: str
     balance: float
     value: float
@@ -81,19 +90,20 @@ class PortfolioView:
 
 @dataclass
 class RateRow:
+    """Курс из кеша с источниками и сроком актуальности."""
+
     pair: str
     rate: float
     updated_at: str | None
     source: str | None
+    is_stale: bool = False
 
 
 def _settings():
-    """Синглтон настроек."""
     return SettingsLoader()
 
 
 def _db():
-    """Синглтон JSON-хранилища."""
     return DatabaseManager()
 
 
@@ -138,16 +148,19 @@ def register(username, password):
     """Создать пользователя и пустой портфель."""
     username = utils.validate_username(username)
     utils.validate_password(password)
-    users = load_users()
-    if any(user.username == username for user in users):
-        raise AuthError(f"Имя пользователя '{username}' уже занято")
-    user_id = max((user.user_id for user in users), default=0) + 1
-    user = User.create(user_id, username, password)
-    users.append(user)
-    save_users(users)
-    portfolios = _db().read("portfolios", [])
-    portfolios.append(Portfolio(user).to_dict())
-    _db().write("portfolios", portfolios)
+    with _db().transaction():
+        users = load_users()
+        if any(user.username == username for user in users):
+            raise AuthError(f"Имя пользователя '{username}' уже занято")
+        portfolios = _db().read("portfolios", [])
+        if not isinstance(portfolios, list):
+            raise ValueError("Повреждён файл portfolios.json: ожидается список")
+        user_id = max((user.user_id for user in users), default=0) + 1
+        user = User.create(user_id, username, password)
+        users.append(user)
+        portfolios.append(Portfolio(user).to_dict())
+        save_users(users)
+        _db().write("portfolios", portfolios)
     return user
 
 
@@ -206,14 +219,15 @@ def load_portfolio(user):
 
 def save_portfolio(portfolio):
     """Заменить или добавить запись портфеля в portfolios.json."""
-    portfolios = _db().read("portfolios", [])
-    for index, item in enumerate(portfolios):
-        if isinstance(item, dict) and item.get("user_id") == portfolio.user_id:
-            portfolios[index] = portfolio.to_dict()
-            break
-    else:
-        portfolios.append(portfolio.to_dict())
-    _db().write("portfolios", portfolios)
+    with _db().transaction():
+        portfolios = _db().read("portfolios", [])
+        for index, item in enumerate(portfolios):
+            if isinstance(item, dict) and item.get("user_id") == portfolio.user_id:
+                portfolios[index] = portfolio.to_dict()
+                break
+        else:
+            portfolios.append(portfolio.to_dict())
+        _db().write("portfolios", portfolios)
 
 
 @cached(RATES_READ_CACHE_SECONDS)
@@ -233,13 +247,14 @@ def rates_table(snapshot):
     table = {}
     for pair, record in snapshot.get("pairs", {}).items():
         rate = record.get("rate") if isinstance(record, dict) else None
-        if isinstance(rate, (int, float)) and rate > 0:
+        if utils.is_valid_rate(rate):
             table[pair] = float(rate)
     return table
 
 
 def _pair_record(snapshot, code):
-    return snapshot["pairs"].get(utils.pair_key(code, utils.BASE_CODE), {})
+    record = snapshot["pairs"].get(utils.pair_key(code, utils.BASE_CODE), {})
+    return record if isinstance(record, dict) else {}
 
 
 def _needed(codes):
@@ -250,7 +265,8 @@ def pairs_are_fresh(snapshot, codes):
     """Есть ли свежие курсы для всех валют из codes (для USD курс не нужен)."""
     ttl = rates_ttl()
     return all(
-        utils.is_fresh(_pair_record(snapshot, code).get("updated_at"), ttl)
+        utils.is_valid_rate(_pair_record(snapshot, code).get("rate"))
+        and utils.is_fresh(_pair_record(snapshot, code).get("updated_at"), ttl)
         for code in _needed(codes)
     )
 
@@ -281,11 +297,10 @@ def _failure_reason():
 
 
 def ensure_rates(codes):
-    """Снимок со свежими курсами для codes.
+    """Получить свежие курсы, при необходимости обновив кеш.
 
-    Устаревший кеш обновляется через парсер; после неудачи повтор
-    не раньше чем через минуту.
-    Второй элемент — причина, по которой обновить не удалось, иначе None.
+    После неудачи повторяем запрос не раньше чем через минуту.
+    Возвращает снимок и None; без свежих данных бросает ApiRequestError.
     """
     snapshot = load_rates()
     if pairs_are_fresh(snapshot, codes):
@@ -298,7 +313,9 @@ def ensure_rates(codes):
         snapshot = load_rates()
         if pairs_are_fresh(snapshot, codes):
             return snapshot, None
-    return snapshot, _failure_reason()
+    raise ApiRequestError(
+        _failure_reason() or "Курсы отсутствуют или устарели. Выполните update-rates."
+    )
 
 
 def get_rate(from_code, to_code):
@@ -308,11 +325,9 @@ def get_rate(from_code, to_code):
     if from_code == to_code:
         return RateInfo(from_code, to_code, 1.0, None, False)
     codes = (from_code, to_code)
-    snapshot, reason = ensure_rates(codes)
+    snapshot, _ = ensure_rates(codes)
     rate = utils.find_rate(rates_table(snapshot), from_code, to_code)
     if rate is None:
-        if reason:
-            raise ApiRequestError(reason)
         raise RateNotFoundError(from_code, to_code)
     return RateInfo(
         from_code,
@@ -342,14 +357,20 @@ def list_rates(currency=None, top=None, base=None):
         rate = utils.find_rate(table, from_code, base_code)
         if from_code == base_code or rate is None:
             continue
-        meta_code = base_code if from_code == utils.BASE_CODE else from_code
-        record = _pair_record(snapshot, meta_code)
+        needed_codes = (from_code, base_code)
+        sources = dict.fromkeys(
+            _pair_record(snapshot, code).get("source")
+            for code in needed_codes
+            if code != utils.BASE_CODE
+        )
+        source = " + ".join(str(value) for value in sources if value) or None
         rows.append(
             RateRow(
                 utils.pair_key(from_code, base_code),
                 rate,
-                record.get("updated_at"),
-                record.get("source"),
+                oldest_update(snapshot, needed_codes),
+                source,
+                not pairs_are_fresh(snapshot, needed_codes),
             )
         )
     if currency:
@@ -368,20 +389,33 @@ def list_rates(currency=None, top=None, base=None):
     return rows, snapshot.get("last_refresh")
 
 
-def _prepare_trade(user_id, currency_code, amount, create_wallet):
-    """Общая часть buy и sell: пользователь, кошелёк и курс к базовой валюте."""
+def _prepare_trade(user_id, currency_code, amount, selling=False):
+    """Проверить вход и получить курс до блокировки хранилища."""
     user = get_user(user_id)
     code = utils.validate_currency_code(currency_code)
-    amount = utils.validate_amount(amount)
-    portfolio = load_portfolio(user)
-    if create_wallet and code not in portfolio.wallets:
-        portfolio.add_currency(code)
-    wallet = portfolio.get_wallet(code)
-    rate_info = get_rate(code, base_currency())
-    return user, portfolio, wallet, rate_info, amount
+    amount = Wallet.validate_amount(amount)
+    if selling:
+        wallet = load_portfolio(user).get_wallet(code)
+        if amount > wallet.balance:
+            raise InsufficientFundsError(
+                wallet.balance, amount, code, utils.amount_digits(code)
+            )
+    rate_info = get_rate(code, utils.BASE_CODE)
+    with localcontext() as context:
+        context.prec = DECIMAL_PRECISION
+        value = Decimal(str(amount)) * Decimal(str(rate_info.rate))
+    try:
+        value = utils.validate_amount(float(value))
+    except ValueError:
+        raise ValueError(
+            "Стоимость сделки не представима положительным конечным числом"
+        ) from None
+    return code, amount, rate_info, value
 
 
-def _trade_result(user, wallet, rate_info, amount, old_balance):
+def _trade_result(
+    user, wallet, rate_info, amount, old_balance, usd_wallet, old_usd_balance, value
+):
     return TradeResult(
         user.username,
         wallet.currency_code,
@@ -391,31 +425,94 @@ def _trade_result(user, wallet, rate_info, amount, old_balance):
         old_balance,
         wallet.balance,
         rate_info.is_stale,
+        old_usd_balance,
+        usd_wallet.balance,
+        value,
+    )
+
+
+@log_action("DEPOSIT", verbose=True)
+def deposit(user_id, amount):
+    """Пополнить виртуальный USD-кошелёк."""
+    amount = Wallet.validate_amount(amount)
+    with _db().transaction():
+        user = get_user(user_id)
+        portfolio = load_portfolio(user)
+        if utils.BASE_CODE not in portfolio.wallets:
+            portfolio.add_currency(utils.BASE_CODE)
+        wallet = portfolio.get_wallet(utils.BASE_CODE)
+        old_balance = wallet.balance
+        wallet.deposit(amount)
+        save_portfolio(portfolio)
+    return TradeResult(
+        user.username,
+        utils.BASE_CODE,
+        amount,
+        1.0,
+        utils.BASE_CODE,
+        old_balance,
+        wallet.balance,
+        False,
+        settlement_value=amount,
     )
 
 
 @log_action("BUY", verbose=True)
 def buy(user_id, currency_code, amount):
-    """Купить валюту: кошелёк создаётся при первой покупке."""
-    user, portfolio, wallet, rate_info, amount = _prepare_trade(
-        user_id, currency_code, amount, True
+    """Купить валюту за USD; новый кошелёк создаётся автоматически."""
+    code, amount, rate_info, value = _prepare_trade(user_id, currency_code, amount)
+    with _db().transaction():
+        user = get_user(user_id)
+        portfolio = load_portfolio(user)
+        if utils.BASE_CODE not in portfolio.wallets:
+            raise InsufficientFundsError(0.0, value, utils.BASE_CODE, 2)
+        usd_wallet = portfolio.get_wallet(utils.BASE_CODE)
+        old_usd_balance = usd_wallet.balance
+        if code == utils.BASE_CODE:
+            if value > old_usd_balance:
+                raise InsufficientFundsError(old_usd_balance, value, code, 2)
+            wallet = usd_wallet
+            old_balance = old_usd_balance
+        else:
+            usd_wallet.withdraw(value)
+            if code not in portfolio.wallets:
+                portfolio.add_currency(code)
+            wallet = portfolio.get_wallet(code)
+            old_balance = wallet.balance
+            wallet.deposit(amount)
+            save_portfolio(portfolio)
+    return _trade_result(
+        user, wallet, rate_info, amount, old_balance, usd_wallet, old_usd_balance, value
     )
-    old_balance = wallet.balance
-    wallet.deposit(amount)
-    save_portfolio(portfolio)
-    return _trade_result(user, wallet, rate_info, amount, old_balance)
 
 
 @log_action("SELL", verbose=True)
 def sell(user_id, currency_code, amount):
-    """Продать валюту с существующего кошелька."""
-    user, portfolio, wallet, rate_info, amount = _prepare_trade(
-        user_id, currency_code, amount, False
+    """Продать валюту и зачислить выручку в USD."""
+    code, amount, rate_info, value = _prepare_trade(
+        user_id, currency_code, amount, selling=True
     )
-    old_balance = wallet.balance
-    wallet.withdraw(amount)
-    save_portfolio(portfolio)
-    return _trade_result(user, wallet, rate_info, amount, old_balance)
+    with _db().transaction():
+        user = get_user(user_id)
+        portfolio = load_portfolio(user)
+        wallet = portfolio.get_wallet(code)
+        old_balance = wallet.balance
+        if code == utils.BASE_CODE:
+            if amount > old_balance:
+                raise InsufficientFundsError(old_balance, amount, code, 2)
+            usd_wallet = wallet
+            old_usd_balance = old_balance
+        else:
+            wallet.withdraw(amount)
+            if utils.BASE_CODE not in portfolio.wallets:
+                portfolio.add_currency(utils.BASE_CODE)
+            usd_wallet = portfolio.get_wallet(utils.BASE_CODE)
+            old_usd_balance = usd_wallet.balance
+            usd_wallet.deposit(value)
+            save_portfolio(portfolio)
+    return _trade_result(
+        user, wallet, rate_info, amount, old_balance, usd_wallet, old_usd_balance, value
+    )
 
 
 def show_portfolio(user_id, base=None):
@@ -426,22 +523,21 @@ def show_portfolio(user_id, base=None):
     wallets = portfolio.wallets
     if not wallets:
         return PortfolioView(user.username, base_code, [], 0.0, None, False)
-    codes = [code for code, wallet in wallets.items() if wallet.balance]
-    codes.append(base_code)
-    snapshot, reason = ensure_rates(codes)
+    codes = [
+        code for code, wallet in wallets.items() if wallet.balance and code != base_code
+    ]
+    snapshot = {"pairs": {}}
+    if codes:
+        codes.append(base_code)
+        snapshot, _ = ensure_rates(codes)
     table = rates_table(snapshot)
-    try:
-        rows = []
-        for code, wallet in wallets.items():
-            value = 0.0
-            if wallet.balance:
-                value = utils.convert(wallet.balance, code, base_code, table)
-            rows.append(PortfolioRow(code, wallet.balance, value))
-        total = portfolio.get_total_value(base_code, table)
-    except RateNotFoundError:
-        if reason:
-            raise ApiRequestError(reason) from None
-        raise
+    rows = []
+    for code, wallet in wallets.items():
+        value = 0.0
+        if wallet.balance:
+            value = utils.convert(wallet.balance, code, base_code, table)
+        rows.append(PortfolioRow(code, wallet.balance, value))
+    total = portfolio.get_total_value(base_code, table)
     return PortfolioView(
         user.username,
         base_code,

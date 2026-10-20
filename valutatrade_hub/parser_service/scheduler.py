@@ -19,6 +19,7 @@ class UpdateScheduler:
         self.interval_seconds = interval_seconds
 
     def run_forever(self):
+        """Обновлять курсы с заданным интервалом до прерывания."""
         logger.info("Scheduler started, interval %s s", self.interval_seconds)
         while True:
             self.updater.run_update()
@@ -42,8 +43,8 @@ def main(argv=None):
     updater = build_updater()
     with parser_console():
         if args.once:
-            updater.run_update()
-            return
+            report = updater.run_update()
+            return 1 if report.errors else 0
         try:
             UpdateScheduler(updater, args.interval).run_forever()
         except KeyboardInterrupt:
@@ -51,4 +52,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

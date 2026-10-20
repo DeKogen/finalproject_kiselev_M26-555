@@ -1,9 +1,10 @@
-"""Декораторы: журнал доменных операций и кэш результата в замыкании."""
+"""Логирование операций и кэширование результатов."""
 
 import functools
 import inspect
 import logging
 import time
+from decimal import Decimal
 
 from valutatrade_hub.core.utils import format_rate
 from valutatrade_hub.logging_config import ACTIONS_LOGGER
@@ -12,11 +13,19 @@ logger = logging.getLogger(ACTIONS_LOGGER)
 QUOTED_KEYS = ("user", "currency", "base", "error_message")
 
 
+def _format_number(value):
+    number = Decimal(str(value))
+    if not number.is_finite():
+        return str(value)
+    whole, _, fraction = format(number, "f").partition(".")
+    return f"{whole}.{fraction.rstrip('0').ljust(4, '0')}"
+
+
 def _format_value(key, value):
     if key == "rate":
         return format_rate(value)
     if isinstance(value, float):
-        return f"{value:.4f}"
+        return _format_number(value)
     if isinstance(value, str) and key in QUOTED_KEYS:
         return f"'{value}'"
     return str(value)
@@ -31,10 +40,10 @@ def _format_line(action, fields):
 
 
 def log_action(action, verbose=False):
-    """Записать в журнал параметры и результат операции.
+    """Записать параметры и результат операции в лог.
 
-    Исключения не подавляются: они фиксируются в логе и пробрасываются дальше.
-    При verbose=True добавляется состояние кошелька «было->стало».
+    Ошибки тоже записываются и передаются вызывающему коду.
+    verbose=True добавляет баланс до и после операции.
     """
 
     def decorator(func):
@@ -56,7 +65,7 @@ def log_action(action, verbose=False):
                 fields["result"] = "ERROR"
                 fields["error_type"] = type(error).__name__
                 fields["error_message"] = str(error)
-                logger.error(
+                logger.info(
                     _format_line(action, fields),
                     extra={"fields": {"action": action, **fields}},
                 )
@@ -67,7 +76,8 @@ def log_action(action, verbose=False):
             fields["base"] = getattr(result, "base", None)
             if verbose and hasattr(result, "old_balance"):
                 fields["balance"] = (
-                    f"{result.old_balance:.4f}->{result.new_balance:.4f}"
+                    f"{_format_number(result.old_balance)}"
+                    f"->{_format_number(result.new_balance)}"
                 )
             fields["result"] = "OK"
             logger.info(
@@ -82,9 +92,9 @@ def log_action(action, verbose=False):
 
 
 def cached(ttl_seconds):
-    """Кэшировать результат вызова на ttl_seconds; хранилище живёт в замыкании.
+    """Кэшировать результат на ttl_seconds секунд в замыкании.
 
-    У обёрнутой функции появляется метод cache_clear() для сброса.
+    Метод cache_clear() сбрасывает кэш.
     """
 
     def decorator(func):
